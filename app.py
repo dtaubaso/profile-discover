@@ -1,20 +1,18 @@
 # app.py
 import base64
+import os
 import re
 import requests
 import streamlit as st
 
-WIKIDATA_SEARCH = "https://www.wikidata.org/w/api.php"
-WIKIDATA_ENTITY = "https://www.wikidata.org/wiki/Special:EntityData/{qid}.json"
+KG_ENDPOINT = "https://kgsearch.googleapis.com/v1/entities:search"
 MID_RE = re.compile(r"^/m/[0-9a-z_]+$")
 
-# ========== Utils: base64url & protobuf length (varint) ==========
-
+# ========== utils: base64url + varint + token ==========
 def b64url_nopad_encode(b: bytes) -> str:
     return base64.urlsafe_b64encode(b).decode("utf-8").rstrip("=")
 
 def varint_encode(n: int) -> bytes:
-    """Varint (protobuf) para longitudes >= 128 también."""
     out = bytearray()
     while True:
         to_write = n & 0x7F
@@ -29,117 +27,112 @@ def varint_encode(n: int) -> bytes:
 def encode_profile_token_from_mid(mid: str) -> str:
     if not MID_RE.match(mid):
         raise ValueError("MID inválido (esperado algo como '/m/07k2d').")
-    mid_b = mid.encode("utf-8")
-    # Mensaje protobuf mínimo: field #1 (wire type 2) -> tag 0x0A, luego len (varint), luego bytes
-    protobuf = bytes([0x0A]) + varint_encode(len(mid_b)) + mid_b
+    mb = mid.encode("utf-8")
+    protobuf = bytes([0x0A]) + varint_encode(len(mb)) + mb  # field 1, length-delimited
     return b64url_nopad_encode(protobuf)
 
 def build_profile_url(token: str) -> str:
     return f"https://profile.google.com/cp/{token}"
 
-# ========== Wikidata helpers ==========
+# ========== KG Search ==========
+def extract_mid_from_id(id_value: str) -> str | None:
+    """
+    El @id de KG suele venir como 'kg:/m/079l8w' o 'https://kg.google.com/m/079l8w'
+    o 'g:/...' / '/g/...'. Acá nos quedamos sólo con '/m/...'.
+    """
+    # Normalizar separadores
+    parts = id_value.split("/")
+    # Buscar el segmento 'm' y devolver '/m/<resto>'
+    for i, p in enumerate(parts):
+        if p == "m" and i + 1 < len(parts):
+            mid = "/m/" + parts[i + 1]
+            return mid if MID_RE.match(mid) else None
+        if p.startswith("m") and p != "m":  # por si viene 'm:079l8w' (raro)
+            candidate = "/m/" + p.split(":")[-1]
+            return candidate if MID_RE.match(candidate) else None
+    # A veces viene como 'kg:/m/079l8w' completo en una sola cadena:
+    m = re.search(r"(/m/[0-9a-z_]+)", id_value)
+    if m:
+        mid = m.group(1)
+        return mid if MID_RE.match(mid) else None
+    return None
 
-@st.cache_data(show_spinner=False, ttl=3600)
-def wikidata_search(query: str, language: str = "es", limit: int = 10):
+@st.cache_data(show_spinner=False, ttl=1800)
+def kg_search(query: str, api_key: str, lang: str = "es", limit: int = 10):
     params = {
-        "action": "wbsearchentities",
-        "search": query,
-        "language": language,
-        "uselang": language,
-        "format": "json",
+        "query": query,
+        "key": api_key,
         "limit": limit,
+        "languages": lang,
     }
-    r = requests.get(WIKIDATA_SEARCH, params=params, timeout=20)
+    r = requests.get(KG_ENDPOINT, params=params, timeout=20)
     r.raise_for_status()
-    return r.json().get("search", [])
-
-@st.cache_data(show_spinner=False, ttl=3600)
-def wikidata_get_mid(qid: str) -> str | None:
-    r = requests.get(WIKIDATA_ENTITY.format(qid=qid), timeout=20)
-    r.raise_for_status()
-    ent = r.json()["entities"][qid]
-    claims = ent.get("claims", {})
-    p646 = claims.get("P646")
-    if not p646:
-        return None
-    # tomar el primer valor de P646
-    return p646[0]["mainsnak"]["datavalue"]["value"]
+    return r.json()
 
 # ========== UI ==========
-
-st.set_page_config(page_title="Google Profile cp/ token builder", page_icon="🧩", layout="centered")
-st.title("🧩 Google Profile cp/ token builder")
-st.caption("De nombre → MID (Wikidata P646) → token → URL `profile.google.com/cp/…`")
+st.set_page_config(page_title="KG → MID → cp/ URL", page_icon="🧩", layout="centered")
+st.title("🧩 Google KG → MID → profile.google.com/cp/…")
+st.caption("Ingresa un nombre, obtené el MID con la Knowledge Graph API y generá la URL de profile.")
 
 with st.sidebar:
+    st.header("🔐 API Key")
+    default_key = st.secrets.get("KG_API_KEY", "")
+    api_key = st.text_input("Google KG API key", value=default_key, type="password")
+    st.markdown(
+        "- Crea una API key en Google Cloud y habilita **Knowledge Graph Search API**.\n"
+        "- También podés definir `KG_API_KEY` en *Secrets* de Streamlit."
+    )
     st.header("🔧 Opciones")
-    lang = st.selectbox("Idioma de búsqueda en Wikidata", ["es", "en", "pt", "fr", "de"], index=0)
-    limit = st.slider("Resultados a listar", 1, 20, 10)
+    lang = st.selectbox("Idioma", ["es", "en", "pt", "fr", "de"], index=0)
+    limit = st.slider("Resultados", 1, 20, 10)
 
 tab1, tab2 = st.tabs(["🔎 Buscar por nombre", "🆔 Ya tengo el MID"])
 
 with tab1:
-    q = st.text_input("Nombre de la entidad (ej: clarin, the new york times, infobae)", "")
-    if st.button("Buscar en Wikidata", disabled=not q.strip()):
-        try:
-            results = wikidata_search(q.strip(), language=lang, limit=limit)
-            if not results:
-                st.warning("No se encontraron resultados.")
-            else:
-                # Render lista y permitir elegir uno
-                options = []
-                for it in results:
-                    label = it.get("label") or ""
-                    desc = it.get("description") or ""
-                    qid = it["id"]
-                    options.append((qid, f"{label} — {desc} ({qid})"))
+    q = st.text_input("Nombre de la entidad (ej.: clarin, infobae, the new york times)")
+    if st.button("Buscar en Google KG", disabled=not q.strip()):
+        if not api_key:
+            st.error("Ingresá tu API key primero.")
+        else:
+            try:
+                data = kg_search(q.strip(), api_key, lang=lang, limit=limit)
+                items = data.get("itemListElement", [])
+                if not items:
+                    st.warning("Sin resultados en KG.")
+                else:
+                    # Armar opciones (label, description, @type)
+                    options = []
+                    for it in items:
+                        res = it.get("result", {})
+                        name = res.get("name") or ""
+                        desc = res.get("description") or ""
+                        types = ", ".join(res.get("@type", [])) if isinstance(res.get("@type", []), list) else (res.get("@type") or "")
+                        kid = res.get("@id") or ""
+                        score = it.get("resultScore")
+                        options.append({
+                            "name": name,
+                            "desc": desc,
+                            "types": types,
+                            "kid": kid,
+                            "score": score,
+                        })
+                    def fmt(o):
+                        base = f"{o['name']} — {o['desc']} [{o['types']}]"
+                        if o["score"] is not None:
+                            base += f"  (score: {o['score']:.2f})"
+                        return base
 
-                sel = st.selectbox("Elegí la entidad correcta:", options, format_func=lambda x: x[1])
-                if sel:
-                    qid = sel[0]
-                    with st.spinner(f"Buscando Freebase ID (P646) para {qid}…"):
-                        mid = wikidata_get_mid(qid)
-                    if not mid:
-                        st.error("La entidad seleccionada no tiene Freebase ID (P646). Probá con otra.")
-                    else:
-                        try:
-                            token = encode_profile_token_from_mid(mid)
-                            url = build_profile_url(token)
-                            st.success("¡Listo!")
-                            st.write("**QID:**", qid)
-                            st.write("**MID:**", f"`{mid}`")
-                            st.write("**Token (base64url):**")
-                            st.code(token, language="text")
-                            st.link_button("Abrir URL", url)
-                            st.text_input("Copiar URL", url)
-                        except Exception as e:
-                            st.exception(e)
-        except requests.RequestException as e:
-            st.error("Error de red al consultar Wikidata.")
-            st.exception(e)
-
-with tab2:
-    mid_input = st.text_input("Pegá un MID directamente (ej: /m/079l8w)", "")
-    if st.button("Generar URL desde MID", disabled=not mid_input.strip()):
-        try:
-            token = encode_profile_token_from_mid(mid_input.strip())
-            url = build_profile_url(token)
-            st.success("¡Listo!")
-            st.write("**MID:**", f"`{mid_input.strip()}`")
-            st.write("**Token (base64url):**")
-            st.code(token, language="text")
-            st.link_button("Abrir URL", url)
-            st.text_input("Copiar URL", url)
-        except Exception as e:
-            st.exception(e)
-
-st.divider()
-with st.expander("❓Notas rápidas"):
-    st.markdown(
-        """
-- La app busca en Wikidata y usa la **propiedad P646 (Freebase ID)** como MID.
-- El token se arma con un **mensaje protobuf mínimo**: `0x0A` (campo 1, length-delimited) + `len(varint)` + bytes del MID.  
-- Se codifica en **base64 URL-safe sin padding** y se pega en `https://profile.google.com/cp/<token>`.
-- Si necesitás precisión total en entidades con nombre ambiguo, elegí la correcta en la lista (mirá la descripción/QID).
-        """
-    )
+                    sel = st.selectbox("Elegí la entidad correcta:", options, format_func=fmt)
+                    if sel:
+                        mid = extract_mid_from_id(sel["kid"]) if sel["kid"] else None
+                        if not mid:
+                            st.error(f"No pude extraer un MID '/m/...' del @id: {sel['kid']!r}")
+                        else:
+                            try:
+                                token = encode_profile_token_from_mid(mid)
+                                url = build_profile_url(token)
+                                st.success("¡Listo!")
+                                st.write("**Nombre:**", sel["name"])
+                                st.write("**@id (KG):**", f"`{sel['kid']}`")
+                                st.write("**MID:**", f"`{mid}`")
+                                st.write("
