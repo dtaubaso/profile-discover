@@ -124,10 +124,9 @@ st.set_page_config(page_title="URL → (/g|/m) → Google Profile cp/", page_ico
 st.title("🧩 De URL del sitio → ID `/g` o `/m` → `profile.google.com/cp/…`")
 
 with st.sidebar:
-    st.header("🔐 Credenciales")
-    default_key = st.secrets.get("GOOGLE_API_KEY", "")
-    api_key = st.text_input("Google API Key", value=default_key, type="password",
-                            help="Activa 'Knowledge Graph Search API' en tu proyecto y pega la API key.")
+    
+    api_key = st.secrets.get("GOOGLE_API_KEY", "")
+    
     st.header("🔧 Opciones")
     lang = st.selectbox("Idioma (languages)", ["es", "en", "pt", "fr", "de"], index=0)
     limit = st.slider("Resultados por tipo", 1, 20, 10)
