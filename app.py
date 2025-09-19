@@ -125,22 +125,9 @@ st.title("🧩 De URL del sitio → ID `/g` o `/m` → `profile.google.com/cp/�
 
 with st.sidebar:
     st.header("🔐 Credenciales")
-
-    # 1) Tomar la key de secrets si existe
-    secret_key = st.secrets.get("GOOGLE_API_KEY", "").strip()
-    api_key = secret_key  # valor por defecto
-
-    if secret_key:
-        st.success("Usando GOOGLE_API_KEY de st.secrets")
-        # 2) (Opcional) permitir override manual
-        if st.checkbox("Usar una API key diferente", value=False):
-            api_key = st.text_input("Google API Key (override)", value="", type="password",
-                                    help="Sobrescribe la key de st.secrets solo si lo necesitás.").strip()
-    else:
-        # 3) Si no hay secrets, pedirla
-        api_key = st.text_input("Google API Key", value="", type="password",
-                                help="Activa 'Knowledge Graph Search API' y pega tu API key.").strip()
-
+    default_key = st.secrets.get("GOOGLE_API_KEY", "")
+    api_key = st.text_input("Google API Key", value=default_key, type="password",
+                            help="Activa 'Knowledge Graph Search API' en tu proyecto y pega la API key.")
     st.header("🔧 Opciones")
     lang = st.selectbox("Idioma (languages)", ["es", "en", "pt", "fr", "de"], index=0)
     limit = st.slider("Resultados por tipo", 1, 20, 10)
@@ -148,21 +135,17 @@ with st.sidebar:
         "Types (schema.org, recomendados para medios)",
         ["NewsMediaOrganization","Organization","Corporation","Brand","WebSite","Person"],
         default=["NewsMediaOrganization","Organization","Corporation","Brand"],
-        help="Sumá 'WebSite' si no aparece nada."
+        help="Probá sumar 'WebSite' si no aparece nada."
     )
 
 site_input = st.text_input("Pegá la URL del sitio (ej: https://www.clarin.com/)", "")
 
-# 👉 El botón solo se deshabilita si no hay URL; la key se valida adentro
-run = st.button("Buscar ID en Knowledge Graph", disabled=not site_input.strip())
-
-if run:
-    if not api_key:
-        st.error("No hay API key configurada (ni en st.secrets ni override).")
-        st.stop()
-
-    try:
-        target_host = normalize_host(site_input)
+if st.button("Buscar ID en Knowledge Graph", disabled=(not site_input.strip() or not api_key.strip())):
+    if not api_key.strip():
+        st.error("Falta la API key.")
+    else:
+        try:
+            target_host = normalize_host(site_input)
             with st.spinner(f"Buscando entidad del KG para: {target_host} …"):
                 queries = [target_host, site_input.strip()]
                 items, seen = [], set()
