@@ -120,8 +120,8 @@ def choose_best_result(items: list[dict], target_host: str):
     return res, kgid
 
 # ========== UI ==========
-st.set_page_config(page_title="URL → (/g|/m) → Google Profile cp/", page_icon="🧩", layout="centered")
-st.title("🧩 De URL del sitio → ID `/g` o `/m` → `profile.google.com/cp/…`")
+st.set_page_config(page_title="Google Profile URL Builder", page_icon="🧩", layout="centered")
+st.title("🧩 Google Profile URL Builder")
 
 with st.sidebar:
     
@@ -137,7 +137,7 @@ with st.sidebar:
         help="Probá sumar 'WebSite' si no aparece nada."
     )
 
-site_input = st.text_input("Pegá la URL del sitio (ej: https://www.clarin.com/)", "")
+site_input = st.text_input("Agregá entidad o url", "")
 
 if st.button("Buscar ID en Knowledge Graph", disabled=(not site_input.strip() or not api_key.strip())):
     if not api_key.strip():
