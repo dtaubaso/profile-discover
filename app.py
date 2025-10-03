@@ -122,6 +122,7 @@ def choose_best_result(items: list[dict], target_host: str):
 # ========== UI ==========
 st.set_page_config(page_title="Google Profile URL Builder", page_icon="🧩", layout="centered")
 st.title("🧩 Google Profile URL Builder")
+st.caption(("[Creado por Damián Taubaso](https://www.linkedin.com/in/dtaubaso/)"))
 
 with st.sidebar:
     
